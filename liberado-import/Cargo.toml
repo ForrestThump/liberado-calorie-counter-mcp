@@ -1,0 +1,20 @@
+[package]
+name = "liberado-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "liberado-import"
+path = "src/main.rs"
+
+[dependencies]
+liberado-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+sqlx.workspace = true

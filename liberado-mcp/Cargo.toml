@@ -1,0 +1,35 @@
+[package]
+name = "liberado-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "liberado-mcp"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+liberado-core.workspace = true
+
+turbomcp.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+argon2.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+tokio = { workspace = true, features = ["full"] }
