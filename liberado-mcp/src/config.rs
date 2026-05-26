@@ -12,8 +12,8 @@ pub struct ServerConfig {
     pub database_url: String,
     pub db_max_connections: u32,
     pub transport: TransportConfig,
-    /// In stdio mode: API key for the single session user. In HTTP mode: unused
-    /// (key is supplied per request as a tool parameter).
+    /// In stdio mode: API key for the single session user. In HTTP mode: fallback
+    /// key used when a tool call omits or leaves `api_key` empty.
     pub default_api_key: String,
     pub usda_api_key: String,
     pub estimator_provider: String,
