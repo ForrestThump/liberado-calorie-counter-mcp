@@ -353,6 +353,55 @@ pub fn usda_id_to_nutrient_name(usda_id: i32) -> Option<&'static str> {
     }
 }
 
+/// Inserts a single food portion (named serving size). Upserts on conflict.
+pub async fn insert_food_portion(
+    pool: &PgPool,
+    food_id: i32,
+    unit_label: &str,
+    gram_equivalent: Option<f32>,
+    ml_equivalent: Option<f32>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO food_portions (food_id, unit_label, gram_equivalent, ml_equivalent)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (food_id, unit_label) DO UPDATE
+             SET gram_equivalent = EXCLUDED.gram_equivalent,
+                 ml_equivalent   = EXCLUDED.ml_equivalent",
+    )
+    .bind(food_id)
+    .bind(unit_label.trim().to_lowercase())
+    .bind(gram_equivalent)
+    .bind(ml_equivalent)
+    .execute(pool)
+    .await
+    .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?;
+    Ok(())
+}
+
+/// Inserts nutrient values by canonical name. Skips entries where `value` is None
+/// or zero. Uses the same upsert SQL as `insert_usda_nutrients`.
+pub async fn insert_named_nutrients(
+    pool: &PgPool,
+    food_id: i32,
+    pairs: &[(&str, Option<f32>)],
+) -> Result<()> {
+    for (name, value) in pairs {
+        let Some(v) = value.filter(|v| *v != 0.0) else { continue };
+        sqlx::query(
+            "INSERT INTO food_nutrient_values (food_id, nutrient_id, value)
+             SELECT $1, id, $3 FROM nutrients WHERE name = $2
+             ON CONFLICT (food_id, nutrient_id) DO UPDATE SET value = EXCLUDED.value",
+        )
+        .bind(food_id)
+        .bind(*name)
+        .bind(v)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?;
+    }
+    Ok(())
+}
+
 /// Inserts named portions for a USDA food item, normalising gram_equivalent to
 /// "per 1 unit" (USDA sometimes stores e.g. 0.33 cup = 27g; we store 1 cup = 81g).
 /// Skips entries with a missing modifier or gramWeight. Upserts on conflict.
@@ -372,18 +421,7 @@ pub async fn insert_usda_portions(
         let amount = p.amount.unwrap_or(1.0).max(f64::EPSILON);
         let grams_per_unit = (gram_weight / amount) as f32;
 
-        sqlx::query(
-            "INSERT INTO food_portions (food_id, unit_label, gram_equivalent)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (food_id, unit_label) DO UPDATE
-                 SET gram_equivalent = EXCLUDED.gram_equivalent",
-        )
-        .bind(food_id)
-        .bind(label.to_lowercase())
-        .bind(grams_per_unit)
-        .execute(pool)
-        .await
-        .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?;
+        insert_food_portion(pool, food_id, label, Some(grams_per_unit), None).await?;
     }
     Ok(())
 }
@@ -494,19 +532,7 @@ pub async fn cache_off_food(pool: &PgPool, product: &OffProduct) -> Result<i32> 
         } else {
             (Some(qty as f32), None)
         };
-        sqlx::query(
-            "INSERT INTO food_portions (food_id, unit_label, gram_equivalent, ml_equivalent)
-             VALUES ($1, 'serving', $2, $3)
-             ON CONFLICT (food_id, unit_label) DO UPDATE
-                 SET gram_equivalent = EXCLUDED.gram_equivalent,
-                     ml_equivalent   = EXCLUDED.ml_equivalent",
-        )
-        .bind(food_id)
-        .bind(gram_eq)
-        .bind(ml_eq)
-        .execute(pool)
-        .await
-        .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?;
+        insert_food_portion(pool, food_id, "serving", gram_eq, ml_eq).await?;
     }
 
     Ok(food_id)
