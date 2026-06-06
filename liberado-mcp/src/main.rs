@@ -12,6 +12,10 @@ use turbomcp::prelude::*;
 use liberado_core::{db::create_pool, estimator::NoopEstimator};
 use liberado_mcp::{
     config::{ServerConfig, TransportConfig},
+    constants::{
+        DB_CONNECT_TIMEOUT_SECS, DB_RETRY_BACKOFF_FACTOR, DB_RETRY_INITIAL_DELAY_SECS,
+        DB_RETRY_MAX_DELAY_SECS,
+    },
     server::LiberadoServer,
 };
 
@@ -213,10 +217,11 @@ async fn connect_with_retry(database_url: &str, max_connections: u32) -> sqlx::P
     let timeout_secs: u64 = std::env::var("LIBERADO_DB_CONNECT_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(120);
+        .unwrap_or(DB_CONNECT_TIMEOUT_SECS);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-    let mut delay = Duration::from_secs(2);
+    let mut delay = Duration::from_secs(DB_RETRY_INITIAL_DELAY_SECS);
+    let max_delay = Duration::from_secs(DB_RETRY_MAX_DELAY_SECS);
 
     loop {
         match create_pool(database_url, max_connections).await {
@@ -230,7 +235,7 @@ async fn connect_with_retry(database_url: &str, max_connections: u32) -> sqlx::P
                 }
                 tracing::warn!("PostgreSQL not ready, retrying in {}s: {e}", delay.as_secs());
                 tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(30));
+                delay = (delay * DB_RETRY_BACKOFF_FACTOR).min(max_delay);
             }
         }
     }
