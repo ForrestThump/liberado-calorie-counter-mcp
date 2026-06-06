@@ -4,7 +4,32 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tracing::{debug, warn};
 
+use crate::config::ServerConfig;
 use crate::error::{Error, Result};
+
+// ─── Search options ───────────────────────────────────────────────────────────
+
+/// Tunable knobs for the food search pipeline, populated from `ServerConfig`.
+#[derive(Debug, Clone, Copy)]
+pub struct FoodSearchOptions {
+    pub usda_api_page_size: u32,
+    pub off_api_page_size: u32,
+    pub local_search_min_score: f32,
+    pub usda_match_min_score: f32,
+    pub off_match_min_score: f32,
+}
+
+impl From<&ServerConfig> for FoodSearchOptions {
+    fn from(cfg: &ServerConfig) -> Self {
+        Self {
+            usda_api_page_size: cfg.usda_api_page_size,
+            off_api_page_size: cfg.off_api_page_size,
+            local_search_min_score: cfg.local_search_min_score,
+            usda_match_min_score: cfg.usda_match_min_score,
+            off_match_min_score: cfg.off_match_min_score,
+        }
+    }
+}
 
 // ─── Public response types ────────────────────────────────────────────────────
 
@@ -577,9 +602,10 @@ pub async fn search(
     strong_threshold: f32,
     max_weak_results: usize,
     query: &str,
+    opts: &FoodSearchOptions,
 ) -> Result<SearchResponse> {
     // ── Step 1: local cache ───────────────────────────────────────────────────
-    let local = search_local(pool, query, max_weak_results as u32 + 1, 0.15).await?;
+    let local = search_local(pool, query, max_weak_results as u32 + 1, opts.local_search_min_score).await?;
 
     if let Some(best) = local.first() {
         if best.score >= strong_threshold {
@@ -614,15 +640,15 @@ pub async fn search(
     // ── Step 2: parallel USDA + OFF lookup ───────────────────────────────────
     debug!(query, "No local match; querying external APIs");
     let (usda_result, off_result) = tokio::join!(
-        fetch_usda(http_client, usda_api_key, query, 5),
-        fetch_off(http_client, query, 5),
+        fetch_usda(http_client, usda_api_key, query, opts.usda_api_page_size),
+        fetch_off(http_client, query, opts.off_api_page_size),
     );
 
     // Prefer USDA (higher data quality for generics).
     // Re-rank the returned candidates by trigram similarity to the query so we
     // pick e.g. "chicken breast, skinless" over "chicken breast, with skin".
     if let Ok(usda_foods) = usda_result
-        && let Some((food, score)) = best_usda_match(usda_foods, query) {
+        && let Some((food, score)) = best_usda_match(usda_foods, query, opts.usda_match_min_score) {
         let food_id = cache_usda_food(pool, &food).await?;
         // Fetch named portions from the detail endpoint (best-effort).
         if !usda_api_key.is_empty()
@@ -649,7 +675,7 @@ pub async fn search(
 
     // Fall back to OFF, also re-ranked by similarity.
     if let Ok(off_products) = off_result
-        && let Some((product, score)) = best_off_match(off_products, query) {
+        && let Some((product, score)) = best_off_match(off_products, query, opts.off_match_min_score) {
         let name = product.product_name.clone().unwrap_or_default();
         let food_id = cache_off_food(pool, &product).await?;
         let kcal = get_kcal(pool, food_id).await?.unwrap_or(0.0);
@@ -705,20 +731,20 @@ fn trigram_similarity(a: &str, b: &str) -> f32 {
 
 /// Picks the USDA result most similar to `query`. Returns `None` if no candidate
 /// clears the minimum similarity threshold.
-fn best_usda_match(foods: Vec<UsdaFood>, query: &str) -> Option<(UsdaFood, f32)> {
+fn best_usda_match(foods: Vec<UsdaFood>, query: &str, min_score: f32) -> Option<(UsdaFood, f32)> {
     foods
         .into_iter()
         .map(|f| {
             let score = trigram_similarity(query, &f.description);
             (f, score)
         })
-        .filter(|(_, s)| *s >= 0.10)
+        .filter(|(_, s)| *s >= min_score)
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 /// Picks the OFF product most similar to `query`. Filters out unnamed products
 /// and those below the minimum similarity threshold.
-fn best_off_match(products: Vec<OffProduct>, query: &str) -> Option<(OffProduct, f32)> {
+fn best_off_match(products: Vec<OffProduct>, query: &str, min_score: f32) -> Option<(OffProduct, f32)> {
     products
         .into_iter()
         .filter(|p| p.product_name.as_deref().is_some_and(|n| !n.is_empty()))
@@ -726,7 +752,7 @@ fn best_off_match(products: Vec<OffProduct>, query: &str) -> Option<(OffProduct,
             let score = trigram_similarity(query, p.product_name.as_deref().unwrap_or(""));
             (p, score)
         })
-        .filter(|(_, s)| *s >= 0.10)
+        .filter(|(_, s)| *s >= min_score)
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 

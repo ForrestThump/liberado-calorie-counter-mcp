@@ -2,6 +2,17 @@ use sqlx::PgPool;
 
 use crate::error::Result;
 
+// ─── Unit conversion factors ──────────────────────────────────────────────────
+
+const GRAMS_PER_KG: f32 = 1_000.0;
+const MG_PER_GRAM: f32 = 1_000.0;
+const GRAMS_PER_LB: f32 = 453.592;
+const GRAMS_PER_OZ: f32 = 28.3495;
+const ML_PER_LITER: f32 = 1_000.0;
+const ML_PER_FL_OZ: f32 = 29.5735;
+/// Nutritional data is stored and reported per this many base units (g or ml).
+const NUTRIENT_BASE: f32 = 100.0;
+
 /// The result of resolving an amount + unit string into a canonical base unit.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedAmount {
@@ -20,18 +31,18 @@ pub fn parse_amount(amount: f32, unit: &str) -> ParsedAmount {
     match unit.trim().to_lowercase().as_str() {
         // Mass → grams
         "g" | "gram" | "grams" => ParsedAmount::Grams(amount),
-        "kg" | "kilogram" | "kilograms" => ParsedAmount::Grams(amount * 1_000.0),
-        "mg" | "milligram" | "milligrams" => ParsedAmount::Grams(amount / 1_000.0),
-        "lb" | "lbs" | "pound" | "pounds" => ParsedAmount::Grams(amount * 453.592),
-        "oz" | "ounce" | "ounces" => ParsedAmount::Grams(amount * 28.3495),
+        "kg" | "kilogram" | "kilograms" => ParsedAmount::Grams(amount * GRAMS_PER_KG),
+        "mg" | "milligram" | "milligrams" => ParsedAmount::Grams(amount / MG_PER_GRAM),
+        "lb" | "lbs" | "pound" | "pounds" => ParsedAmount::Grams(amount * GRAMS_PER_LB),
+        "oz" | "ounce" | "ounces" => ParsedAmount::Grams(amount * GRAMS_PER_OZ),
 
         // Volume → milliliters
         "ml" | "milliliter" | "milliliters" | "millilitre" | "millilitres" => {
             ParsedAmount::Milliliters(amount)
         }
-        "l" | "liter" | "liters" | "litre" | "litres" => ParsedAmount::Milliliters(amount * 1_000.0),
+        "l" | "liter" | "liters" | "litre" | "litres" => ParsedAmount::Milliliters(amount * ML_PER_LITER),
         "fl oz" | "fl_oz" | "fluid ounce" | "fluid ounces" => {
-            ParsedAmount::Milliliters(amount * 29.5735)
+            ParsedAmount::Milliliters(amount * ML_PER_FL_OZ)
         }
 
         // Everything else (cup, tbsp, tsp, piece, medium, large, slice, serving…)
@@ -84,7 +95,7 @@ pub fn scale_nutrient(value_per_100: f32, parsed: &ParsedAmount, basis: &str) ->
         // Mismatched basis — caller should have caught this; return 0 rather than panic
         _ => return 0.0,
     };
-    value_per_100 * base_amount / 100.0
+    value_per_100 * base_amount / NUTRIENT_BASE
 }
 
 #[cfg(test)]
