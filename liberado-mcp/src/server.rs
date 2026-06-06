@@ -7,7 +7,7 @@ use turbomcp::prelude::*;
 use liberado_core::estimator::NutritionEstimator;
 
 use crate::config::ServerConfig;
-use crate::food;
+use crate::food::{self, FoodSearchOptions};
 use crate::units::{self, ParsedAmount};
 
 pub struct AppState {
@@ -34,7 +34,7 @@ impl LiberadoServer {
             state: Arc::new(AppState {
                 db,
                 http_client: reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
+                    .timeout(std::time::Duration::from_secs(config.http_client_timeout_secs))
                     .build()
                     .expect("failed to build HTTP client"),
                 config,
@@ -63,8 +63,9 @@ impl LiberadoServer {
         let _ = self.resolve_user(&api_key).await?;
         let max = limit
             .unwrap_or(self.state.config.search_max_weak_results)
-            .min(10) as usize;
+            .min(self.state.config.search_max_results_hard_limit) as usize;
 
+        let opts = FoodSearchOptions::from(&*self.state.config);
         let resp = food::search(
             &self.state.db,
             &self.state.http_client,
@@ -72,6 +73,7 @@ impl LiberadoServer {
             self.state.config.search_strong_match_threshold as f32,
             max,
             &query,
+            &opts,
         )
         .await
         .map_err(|e| McpError::internal(e.to_string()))?;
@@ -343,6 +345,7 @@ impl LiberadoServer {
         let ts = parse_logged_at(logged_at.as_deref())?;
 
         // Find the food (full fallback chain: local → USDA → OFF)
+        let opts = FoodSearchOptions::from(&*self.state.config);
         let search_resp = food::search(
             &self.state.db,
             &self.state.http_client,
@@ -350,6 +353,7 @@ impl LiberadoServer {
             self.state.config.search_strong_match_threshold as f32,
             self.state.config.search_max_weak_results as usize,
             &food_name,
+            &opts,
         )
         .await
         .map_err(|e| McpError::internal(e.to_string()))?;
@@ -612,7 +616,9 @@ impl LiberadoServer {
         limit: Option<u32>,
     ) -> McpResult<String> {
         let user = self.resolve_user(&api_key).await?;
-        let max: i64 = limit.unwrap_or(20).min(100) as i64;
+        let max: i64 = limit
+            .unwrap_or(self.state.config.log_list_default_limit)
+            .min(self.state.config.log_list_max_limit) as i64;
 
         let date_filter: Option<NaiveDate> = match &date {
             Some(s) => Some(

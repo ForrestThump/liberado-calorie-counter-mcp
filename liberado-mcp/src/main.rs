@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
@@ -11,6 +12,10 @@ use turbomcp::prelude::*;
 use liberado_core::{db::create_pool, estimator::NoopEstimator};
 use liberado_mcp::{
     config::{ServerConfig, TransportConfig},
+    constants::{
+        DB_CONNECT_TIMEOUT_SECS, DB_RETRY_BACKOFF_FACTOR, DB_RETRY_INITIAL_DELAY_SECS,
+        DB_RETRY_MAX_DELAY_SECS,
+    },
     server::LiberadoServer,
 };
 
@@ -76,9 +81,7 @@ async fn cmd_serve() {
 
     let config = Arc::new(config);
 
-    let pool = create_pool(&config.database_url, config.db_max_connections)
-        .await
-        .expect("failed to connect to PostgreSQL");
+    let pool = connect_with_retry(&config.database_url, config.db_max_connections).await;
 
     sqlx::migrate!("../migrations")
         .run(&pool)
@@ -209,6 +212,34 @@ async fn cmd_user(action: UserAction) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async fn connect_with_retry(database_url: &str, max_connections: u32) -> sqlx::PgPool {
+    let timeout_secs: u64 = std::env::var("LIBERADO_DB_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DB_CONNECT_TIMEOUT_SECS);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let mut delay = Duration::from_secs(DB_RETRY_INITIAL_DELAY_SECS);
+    let max_delay = Duration::from_secs(DB_RETRY_MAX_DELAY_SECS);
+
+    loop {
+        match create_pool(database_url, max_connections).await {
+            Ok(pool) => {
+                info!("connected to PostgreSQL");
+                return pool;
+            }
+            Err(e) => {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("failed to connect to PostgreSQL after {timeout_secs}s: {e}");
+                }
+                tracing::warn!("PostgreSQL not ready, retrying in {}s: {e}", delay.as_secs());
+                tokio::time::sleep(delay).await;
+                delay = (delay * DB_RETRY_BACKOFF_FACTOR).min(max_delay);
+            }
+        }
+    }
+}
 
 fn hash_api_key(key: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
