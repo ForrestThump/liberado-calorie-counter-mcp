@@ -28,8 +28,8 @@ pub struct ServerConfig {
     pub transport: TransportConfig,
 
     // ── Auth / API keys ───────────────────────────────────────────────────────
-    /// In stdio mode: API key for the single session user. In HTTP mode: unused
-    /// (key is supplied per request as a tool parameter).
+    /// API key for the default user. In stdio mode this seeds the DB on first
+    /// boot. In HTTP mode it is used as a fallback when no api_key is supplied.
     pub default_api_key: String,
     pub usda_api_key: String,
 
