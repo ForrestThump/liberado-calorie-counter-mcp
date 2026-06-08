@@ -413,20 +413,24 @@ pub async fn insert_usda_portions(
     Ok(())
 }
 
+/// Returns the cached food_id for a (source, source_id) pair, or None if not cached.
+async fn find_cached_food(pool: &PgPool, source: &str, source_id: &str) -> Result<Option<i32>> {
+    sqlx::query_scalar::<_, i32>(
+        "SELECT id FROM food_items WHERE source = $1 AND source_id = $2 LIMIT 1",
+    )
+    .bind(source)
+    .bind(source_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))
+}
+
 /// Stores a USDA food in the local cache. Returns the food_id.
 /// If the food (by source_id) is already cached, returns the existing id.
 pub async fn cache_usda_food(pool: &PgPool, food: &UsdaFood) -> Result<i32> {
     let source_id = food.fdc_id.to_string();
 
-    // Return existing id if already cached
-    if let Some(id) = sqlx::query_scalar::<_, i32>(
-        "SELECT id FROM food_items WHERE source = 'usda' AND source_id = $1 LIMIT 1",
-    )
-    .bind(&source_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?
-    {
+    if let Some(id) = find_cached_food(pool, "usda", &source_id).await? {
         return Ok(id);
     }
 
@@ -483,16 +487,10 @@ pub async fn cache_off_food(pool: &PgPool, product: &OffProduct) -> Result<i32> 
 
     let source_id = product.id.as_deref().unwrap_or("");
 
-    if !source_id.is_empty()
-        && let Some(id) = sqlx::query_scalar::<_, i32>(
-            "SELECT id FROM food_items WHERE source = 'off' AND source_id = $1 LIMIT 1",
-        )
-        .bind(source_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| Error::Core(liberado_core::CoreError::Database(e)))?
-    {
-        return Ok(id);
+    if !source_id.is_empty() {
+        if let Some(id) = find_cached_food(pool, "off", source_id).await? {
+            return Ok(id);
+        }
     }
 
     let food_id = sqlx::query_scalar::<_, i32>(
