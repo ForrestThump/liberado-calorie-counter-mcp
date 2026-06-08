@@ -6,6 +6,16 @@ use turbomcp::prelude::*;
 
 use liberado_core::estimator::NutritionEstimator;
 
+trait IntoMcpResult<T> {
+    fn mcp_err(self) -> McpResult<T>;
+}
+
+impl<T, E: std::fmt::Display> IntoMcpResult<T> for Result<T, E> {
+    fn mcp_err(self) -> McpResult<T> {
+        self.mcp_err()
+    }
+}
+
 use crate::config::ServerConfig;
 use crate::food::{self, FoodSearchOptions};
 use crate::units::{self, ParsedAmount};
@@ -76,9 +86,9 @@ impl LiberadoServer {
             &opts,
         )
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
-        serde_json::to_string_pretty(&resp).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&resp).mcp_err()
     }
 
     /// Add a personal nickname so future lookups resolve immediately.
@@ -104,7 +114,7 @@ impl LiberadoServer {
         .bind(user.id)
         .execute(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!("Alias '{alias}' added for food_id {food_id}."))
     }
@@ -132,7 +142,7 @@ impl LiberadoServer {
         .bind(user.id)
         .execute(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!("Tag '{tag}' added to food_id {food_id}."))
     }
@@ -179,7 +189,7 @@ impl LiberadoServer {
         .bind(basis_str)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let nutrients: &[(&str, f32)] = &[
             ("energy",        kcal_per_100),
@@ -200,7 +210,7 @@ impl LiberadoServer {
             .bind(*value)
             .execute(&self.state.db)
             .await
-            .map_err(|e| McpError::internal(e.to_string()))?;
+            .mcp_err()?;
         }
 
         if let Some(portions_json) = &portions {
@@ -229,7 +239,7 @@ impl LiberadoServer {
                 .bind(p.ml)
                 .execute(&self.state.db)
                 .await
-                .map_err(|e| McpError::internal(e.to_string()))?;
+                .mcp_err()?;
             }
         }
 
@@ -256,7 +266,7 @@ impl LiberadoServer {
         .bind(food_id)
         .fetch_optional(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?
+        .mcp_err()?
         .ok_or_else(|| McpError::internal(format!("food_id {food_id} not found")))?;
 
         let (source, source_id) = row;
@@ -275,19 +285,19 @@ impl LiberadoServer {
                     fdc_id,
                 )
                 .await
-                .map_err(|e| McpError::internal(e.to_string()))?;
+                .mcp_err()?;
 
                 sqlx::query("DELETE FROM food_nutrient_values WHERE food_id = $1")
                     .bind(food_id)
                     .execute(&self.state.db)
                     .await
-                    .map_err(|e| McpError::internal(e.to_string()))?;
+                    .mcp_err()?;
 
                 sqlx::query("DELETE FROM food_portions WHERE food_id = $1")
                     .bind(food_id)
                     .execute(&self.state.db)
                     .await
-                    .map_err(|e| McpError::internal(e.to_string()))?;
+                    .mcp_err()?;
 
                 sqlx::query(
                     "UPDATE food_items SET canonical_name = $1, updated_at = now() WHERE id = $2",
@@ -296,16 +306,16 @@ impl LiberadoServer {
                 .bind(food_id)
                 .execute(&self.state.db)
                 .await
-                .map_err(|e| McpError::internal(e.to_string()))?;
+                .mcp_err()?;
 
                 let nutrients = detail.to_usda_nutrients();
                 food::insert_usda_nutrients(&self.state.db, food_id, &nutrients)
                     .await
-                    .map_err(|e| McpError::internal(e.to_string()))?;
+                    .mcp_err()?;
 
                 food::insert_usda_portions(&self.state.db, food_id, &detail.food_portions)
                     .await
-                    .map_err(|e| McpError::internal(e.to_string()))?;
+                    .mcp_err()?;
 
                 Ok(format!("Refreshed food_id {food_id} from USDA (fdc_id {sid})."))
             }
@@ -356,7 +366,7 @@ impl LiberadoServer {
             &opts,
         )
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         if search_resp.fallback_required {
             return Err(McpError::internal(format!(
@@ -384,7 +394,7 @@ impl LiberadoServer {
             ParsedAmount::Named { ref label, count } => {
                 units::resolve_named_portion(&self.state.db, food_id, label, count)
                     .await
-                    .map_err(|e| McpError::internal(e.to_string()))?
+                    .mcp_err()?
                     .ok_or_else(|| McpError::internal(format!(
                         "Unit '{unit}' not recognized for '{}'. \
                          Use g, oz, lb, ml, l, or a portion from food_portions.",
@@ -434,7 +444,7 @@ impl LiberadoServer {
         .bind(&idempotency_key)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         if let Some(tag_list) = &tags {
             for tag in tag_list {
@@ -446,7 +456,7 @@ impl LiberadoServer {
                 .bind(tag)
                 .execute(&self.state.db)
                 .await
-                .map_err(|e| McpError::internal(e.to_string()))?;
+                .mcp_err()?;
             }
         }
 
@@ -486,7 +496,7 @@ impl LiberadoServer {
         .bind(recipe_id)
         .fetch_optional(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?
+        .mcp_err()?
         .ok_or_else(|| McpError::internal(format!("recipe_id {recipe_id} not found")))?;
 
         if recipe.user_id != user.id {
@@ -501,7 +511,7 @@ impl LiberadoServer {
         .bind(recipe_id)
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         // Aggregate kcal and nutrients across all ingredients, scaled by servings
         let mut total_kcal: f32 = 0.0;
@@ -516,7 +526,7 @@ impl LiberadoServer {
             .bind(ing.food_id)
             .fetch_optional(&self.state.db)
             .await
-            .map_err(|e| McpError::internal(e.to_string()))?
+            .mcp_err()?
             .unwrap_or_else(|| "per_100g".to_string());
 
             let resolved = match (ing.amount_g, ing.amount_ml) {
@@ -540,7 +550,7 @@ impl LiberadoServer {
             .bind(ing.food_id)
             .fetch_all(&self.state.db)
             .await
-            .map_err(|e| McpError::internal(e.to_string()))?;
+            .mcp_err()?;
 
             for (name, value_per_100) in nutrient_rows {
                 let scaled = units::scale_nutrient(value_per_100, &resolved, &basis);
@@ -552,7 +562,7 @@ impl LiberadoServer {
         }
 
         let nutrient_snapshot = serde_json::to_value(&total_nutrients)
-            .map_err(|e| McpError::internal(e.to_string()))?;
+            .mcp_err()?;
 
         let meal_log_id = find_or_create_meal_log(
             &self.state.db,
@@ -588,7 +598,7 @@ impl LiberadoServer {
         .bind(&idempotency_key)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!(
             "Logged recipe '{}' ({:.1} kcal, {scale} serving(s)) to {meal_type} on {}.",
@@ -620,13 +630,10 @@ impl LiberadoServer {
             .unwrap_or(self.state.config.log_list_default_limit)
             .min(self.state.config.log_list_max_limit) as i64;
 
-        let date_filter: Option<NaiveDate> = match &date {
-            Some(s) => Some(
-                NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                    .map_err(|e| McpError::internal(format!("invalid date '{s}': {e}")))?,
-            ),
-            None => None,
-        };
+        let date_filter: Option<NaiveDate> = date
+            .as_deref()
+            .map(|s| parse_date(s, "date"))
+            .transpose()?;
 
         let rows = sqlx::query_as::<_, RecentLogRow>(
             "SELECT
@@ -668,7 +675,7 @@ impl LiberadoServer {
         .bind(max)
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let entries: Vec<JsonValue> = rows
             .iter()
@@ -693,7 +700,7 @@ impl LiberadoServer {
             "count":   entries.len(),
         });
 
-        serde_json::to_string_pretty(&result).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&result).mcp_err()
     }
 
     // ─── Recipes ──────────────────────────────────────────────────────────────
@@ -728,7 +735,7 @@ impl LiberadoServer {
         .bind(&name)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         for ing in &inputs {
             let food_exists: bool = sqlx::query_scalar(
@@ -737,7 +744,7 @@ impl LiberadoServer {
             .bind(ing.food_id)
             .fetch_one(&self.state.db)
             .await
-            .map_err(|e| McpError::internal(e.to_string()))?;
+            .mcp_err()?;
 
             if !food_exists {
                 return Err(McpError::internal(format!(
@@ -751,7 +758,7 @@ impl LiberadoServer {
                 ParsedAmount::Named { ref label, count } => {
                     units::resolve_named_portion(&self.state.db, ing.food_id, label, count)
                         .await
-                        .map_err(|e| McpError::internal(e.to_string()))?
+                        .mcp_err()?
                         .ok_or_else(|| McpError::internal(format!(
                             "Unit '{}' not found for food_id {}",
                             ing.unit, ing.food_id
@@ -774,7 +781,7 @@ impl LiberadoServer {
             .bind(amount_ml)
             .execute(&self.state.db)
             .await
-            .map_err(|e| McpError::internal(e.to_string()))?;
+            .mcp_err()?;
         }
 
         Ok(format!(
@@ -829,7 +836,7 @@ impl LiberadoServer {
         .bind(note.as_deref())
         .execute(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!(
             "Exercise '{description}' logged ({calories_burned} kcal burned) on {}.",
@@ -865,7 +872,7 @@ impl LiberadoServer {
         .bind(note.as_deref())
         .execute(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!("Weight {weight_kg:.1} kg logged on {}.", ts.format("%Y-%m-%d")))
     }
@@ -883,13 +890,12 @@ impl LiberadoServer {
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
 
-        let start = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
-            .map_err(|e| McpError::internal(format!("invalid start_date: {e}")))?;
-        let end = match &end_date {
-            Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|e| McpError::internal(format!("invalid end_date: {e}")))?,
-            None => Utc::now().date_naive(),
-        };
+        let start = parse_date(&start_date, "start_date")?;
+        let end = end_date
+            .as_deref()
+            .map(|s| parse_date(s, "end_date"))
+            .transpose()?
+            .unwrap_or_else(|| Utc::now().date_naive());
 
         let rows = sqlx::query_as::<_, liberado_core::models::WeightLog>(
             "SELECT id, user_id, logged_at, weight_kg, note
@@ -904,7 +910,7 @@ impl LiberadoServer {
         .bind(end)
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let entries: Vec<JsonValue> = rows
             .iter()
@@ -926,7 +932,7 @@ impl LiberadoServer {
             "entries":    entries,
         });
 
-        serde_json::to_string_pretty(&result).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&result).mcp_err()
     }
 
     // ─── Summaries ────────────────────────────────────────────────────────────
@@ -959,7 +965,7 @@ impl LiberadoServer {
         .bind(target_date)
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let total_kcal: f32 = entries.iter().map(|(k, _, _)| k).sum();
 
@@ -989,7 +995,7 @@ impl LiberadoServer {
         .bind(target_date)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
         let burned = burned.unwrap_or(0.0);
 
         // Most recent applicable goal
@@ -1004,7 +1010,7 @@ impl LiberadoServer {
         .bind(target_date)
         .fetch_optional(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let result = serde_json::json!({
             "date":  target_date.to_string(),
@@ -1032,7 +1038,7 @@ impl LiberadoServer {
             })),
         });
 
-        serde_json::to_string_pretty(&result).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&result).mcp_err()
     }
 
     /// Net calories for a user on a given date: calories consumed minus calories burned.
@@ -1059,7 +1065,7 @@ impl LiberadoServer {
         .bind(target_date)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
         let consumed = consumed.unwrap_or(0.0);
 
         let burned: Option<f32> = sqlx::query_scalar(
@@ -1073,7 +1079,7 @@ impl LiberadoServer {
         .bind(target_date)
         .fetch_one(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
         let burned = burned.unwrap_or(0.0);
 
         let result = serde_json::json!({
@@ -1083,7 +1089,7 @@ impl LiberadoServer {
             "kcal_net":      consumed - burned,
         });
 
-        serde_json::to_string_pretty(&result).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&result).mcp_err()
     }
 
     /// Nutrient totals for a single meal log.
@@ -1105,7 +1111,7 @@ impl LiberadoServer {
         .bind(meal_log_id)
         .fetch_optional(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?
+        .mcp_err()?
         .ok_or_else(|| McpError::internal(format!("meal_log {meal_log_id} not found")))?;
 
         if meal.user_id != user.id {
@@ -1129,7 +1135,7 @@ impl LiberadoServer {
         .bind(meal_log_id)
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         let total_kcal: f32 = entries.iter().map(|e| e.kcal_snapshot).sum();
         let mut nutrients: std::collections::HashMap<String, f32> = Default::default();
@@ -1166,7 +1172,7 @@ impl LiberadoServer {
             "entries":     entry_list,
         });
 
-        serde_json::to_string_pretty(&result).map_err(|e| McpError::internal(e.to_string()))
+        serde_json::to_string_pretty(&result).mcp_err()
     }
 
     // ─── Goals ────────────────────────────────────────────────────────────────
@@ -1194,11 +1200,11 @@ impl LiberadoServer {
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
 
-        let date = match &effective_from {
-            Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|e| McpError::internal(format!("invalid effective_from: {e}")))?,
-            None => Utc::now().date_naive(),
-        };
+        let date = effective_from
+            .as_deref()
+            .map(|s| parse_date(s, "effective_from"))
+            .transpose()?
+            .unwrap_or_else(|| Utc::now().date_naive());
 
         // On conflict, only update fields that were explicitly provided (COALESCE preserves existing)
         sqlx::query(
@@ -1223,7 +1229,7 @@ impl LiberadoServer {
         .bind(water_ml)
         .execute(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         Ok(format!("Goals set effective from {date}."))
     }
@@ -1255,7 +1261,7 @@ impl LiberadoServer {
         )
         .fetch_all(&self.state.db)
         .await
-        .map_err(|e| McpError::internal(e.to_string()))?;
+        .mcp_err()?;
 
         for user in users {
             if let Ok(hash) = PasswordHash::new(&user.api_key_hash)
@@ -1288,11 +1294,16 @@ fn parse_logged_at(s: Option<&str>) -> McpResult<DateTime<Utc>> {
     )))
 }
 
-/// Parses an optional date string (YYYY-MM-DD). Defaults to today in UTC.
+/// Parses a YYYY-MM-DD date string, attributing errors to `field` in the message.
+fn parse_date(s: &str, field: &str) -> McpResult<NaiveDate> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|e| McpError::internal(format!("invalid {field} '{s}': {e}")))
+}
+
+/// Parses an optional YYYY-MM-DD date string. Defaults to today in UTC.
 fn parse_date_param(s: Option<&str>) -> McpResult<NaiveDate> {
     match s {
-        Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .map_err(|e| McpError::internal(format!("invalid date '{s}': {e}"))),
+        Some(s) => parse_date(s, "date"),
         None => Ok(Utc::now().date_naive()),
     }
 }
@@ -1319,7 +1330,7 @@ async fn find_or_create_meal_log(
     .bind(*ts)
     .fetch_optional(pool)
     .await
-    .map_err(|e| McpError::internal(e.to_string()))?;
+    .mcp_err()?;
 
     if let Some(id) = existing {
         return Ok(id);
@@ -1333,7 +1344,7 @@ async fn find_or_create_meal_log(
     .bind(meal_type)
     .fetch_one(pool)
     .await
-    .map_err(|e| McpError::internal(e.to_string()))
+    .mcp_err()
 }
 
 /// Fetches all nutrient values for a food, scales them to the logged amount,
@@ -1353,7 +1364,7 @@ async fn build_nutrient_snapshot(
     .bind(food_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| McpError::internal(e.to_string()))?;
+    .mcp_err()?;
 
     let mut map = serde_json::Map::new();
     for (name, value_per_100) in rows {
@@ -1446,6 +1457,24 @@ mod tests {
     fn parse_logged_at_invalid_errors() {
         assert!(parse_logged_at(Some("not-a-date")).is_err());
         assert!(parse_logged_at(Some("2024/01/15")).is_err());
+    }
+
+    #[test]
+    fn parse_date_valid() {
+        let d = parse_date("2024-06-01", "foo").unwrap();
+        assert_eq!(d.to_string(), "2024-06-01");
+    }
+
+    #[test]
+    fn parse_date_invalid_includes_field_name() {
+        let err = parse_date("not-a-date", "start_date").unwrap_err();
+        assert!(format!("{err:?}").contains("start_date"));
+    }
+
+    #[test]
+    fn parse_date_invalid_includes_value() {
+        let err = parse_date("2024-13-01", "end_date").unwrap_err();
+        assert!(format!("{err:?}").contains("2024-13-01"));
     }
 
     #[test]
