@@ -53,12 +53,12 @@ impl LiberadoServer {
         }
     }
 
-    // ─── Food search & management ─────────────────────────────────────────────
+    // ─── Food search & management ───────────────────────────────────────────────
 
     /// Search for a food by name. Checks the local cache first, then falls back
     /// to USDA FoodData Central and Open Food Facts. A strong match is
     /// auto-selected and ready to use in log_food; weak matches are returned as
-    /// candidates \u{2014} pick the best name and pass it to log_food, or call
+    /// candidates — pick the best name and pass it to log_food, or call
     /// confirm_food if none match.
     #[tool("Search for a food by name; checks local cache then USDA and Open Food Facts. Returns food_id, canonical name, kcal, and macros. Strong matches are auto-selected; weak matches list candidates for confirm_food.")]
     async fn search_food(
@@ -328,9 +328,9 @@ impl LiberadoServer {
 
     // ─── Food logging ─────────────────────────────────────────────────────────
 
-    /// Log a food item. Searches by name (local cache \u{2192} USDA \u{2192} Open Food Facts),
+    /// Log a food item. Searches by name (local cache → USDA → Open Food Facts),
     /// converts units, and snapshots kcal + nutrients at write time. If the
-    /// name is ambiguous the tool returns candidates \u{2014} call search_food to find
+    /// name is ambiguous the tool returns candidates — call search_food to find
     /// the exact canonical name, or call confirm_food if no match exists.
     #[tool("Log a food item by name. Searches automatically; call search_food first if the name is ambiguous. Supports g, oz, lb, ml, l, and named portions (cup, tbsp, etc.) registered for that food.")]
     async fn log_food(
@@ -347,7 +347,7 @@ impl LiberadoServer {
         meal_type: String,
         #[description("When food was eaten: RFC 3339 ('2024-01-15T08:30:00Z') or date only ('2024-01-15'). Defaults to now.")]
         logged_at: Option<String>,
-        #[description("Unique string for this logging intent (e.g. 'breakfast-milk-2024-01-15'). Safe to retry \u{2014} duplicate keys are ignored.")]
+        #[description("Unique string for this logging intent (e.g. 'breakfast-milk-2024-01-15'). Safe to retry — duplicate keys are ignored.")]
         idempotency_key: String,
         #[description("Optional labels to attach to this log entry (e.g. [\"cheat meal\", \"post-workout\"])")]
         tags: Option<Vec<String>>,
@@ -355,7 +355,7 @@ impl LiberadoServer {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
         let ts = parse_logged_at(logged_at.as_deref())?;
 
-        // Find the food (full fallback chain: local \u{2192} USDA \u{2192} OFF)
+        // Find the food (full fallback chain: local → USDA → OFF)
         let opts = FoodSearchOptions::from(&*self.state.config);
         let search_resp = food::search(
             &self.state.db,
@@ -483,7 +483,7 @@ impl LiberadoServer {
         meal_type: String,
         #[description("When the meal was eaten: RFC 3339 ('2024-01-15T08:30:00Z') or date only ('2024-01-15'). Defaults to now.")]
         logged_at: Option<String>,
-        #[description("Unique string for this logging intent. Safe to retry \u{2014} duplicate keys are ignored.")]
+        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored.")]
         idempotency_key: String,
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
@@ -704,7 +704,7 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Recipes ──────────────────────────────────────────────────────────────
+    // ─── Recipes ───────────────────────────────────────────────────────────────────
 
     /// Create a named recipe from a list of food ingredients with amounts.
     #[tool("Create a named recipe from food ingredients for repeated composite meals. Returns a recipe_id for use with log_recipe. food_id values come from search_food.")]
@@ -791,7 +791,7 @@ impl LiberadoServer {
         ))
     }
 
-    // ─── Exercise ─────────────────────────────────────────────────────────────
+    // ─── Exercise ──────────────────────────────────────────────────────────────────
 
     /// Log an exercise session with calories burned.
     #[tool("Log an exercise session with estimated or confirmed calories burned. Burned calories are subtracted from net_kcal in get_daily_summary.")]
@@ -809,7 +809,7 @@ impl LiberadoServer {
         logged_at: Option<String>,
         #[description("Optional free-text note")]
         note: Option<String>,
-        #[description("Unique string for this logging intent. Safe to retry \u{2014} duplicate keys are ignored.")]
+        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored.")]
         idempotency_key: String,
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
@@ -845,7 +845,7 @@ impl LiberadoServer {
         ))
     }
 
-    // ─── Weight ───────────────────────────────────────────────────────────────
+    // ─── Weight ─────────────────────────────────────────────────────────────────────
 
     /// Log a body weight measurement.
     #[tool("Log a body weight measurement in kilograms. History is retrievable with get_weight_history.")]
@@ -936,7 +936,7 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Summaries ────────────────────────────────────────────────────────────
+    // ─── Summaries ────────────────────────────────────────────────────────────────
 
     /// All nutrient totals for a user on a given date, compared against their goals.
     #[tool("Return total kcal, macros, exercise burned, net kcal, and per-meal breakdown for a given date. Includes goal comparison if set_goals has been called.")]
@@ -1176,10 +1176,10 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Goals ────────────────────────────────────────────────────────────────
+    // ─── Goals ─────────────────────────────────────────────────────────────────────
 
     /// Set or update daily nutrition targets for a user.
-    #[tool("Set daily nutrition targets (kcal, macros, fiber, water). Goals are versioned by date \u{2014} omit effective_from to apply from today. Only supplied fields are updated; existing values are preserved.")]
+    #[tool("Set daily nutrition targets (kcal, macros, fiber, water). Goals are versioned by date — omit effective_from to apply from today. Only supplied fields are updated; existing values are preserved.")]
     async fn set_goals(
         &self,
         #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
@@ -1236,15 +1236,9 @@ impl LiberadoServer {
     }
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
+// ─── Private helpers ──────────────────────────────────────────────────────────────
 
 impl LiberadoServer {
-    /// Resolves an API key to a User. Falls back to `config.default_api_key`
-    /// when the caller supplies an empty key and the env var is set.
-    ///
-    /// Fast path: direct WHERE lookup on the sha256 hash (microseconds, no blocking).
-    /// Slow path: argon2 scan for any user whose hash hasn't been migrated yet;
-    ///            on success, upgrades the stored hash so future calls take the fast path.
     async fn resolve_user(
         &self,
         api_key: &str,
@@ -1261,8 +1255,7 @@ impl LiberadoServer {
 
         let sha256_hash = hex::encode(sha2::Sha256::digest(key.as_bytes()));
 
-        // Fast path: direct index lookup, no blocking (microseconds).
-        if let Some(user) = sqlx::query_as::<_, liberado_core::models::User>(
+        sqlx::query_as::<_, liberado_core::models::User>(
             "SELECT id, username, api_key_hash, timezone, created_at \
              FROM users WHERE api_key_hash = $1",
         )
@@ -1270,58 +1263,11 @@ impl LiberadoServer {
         .fetch_optional(&self.state.db)
         .await
         .mcp_err()?
-        {
-            return Ok(user);
-        }
-
-        // Slow path: argon2 fallback for hashes not yet migrated to sha256.
-        // Self-eliminating: upgrades the stored hash on first successful auth.
-        use argon2::{Argon2, PasswordHash, PasswordVerifier};
-
-        let legacy_users = sqlx::query_as::<_, liberado_core::models::User>(
-            "SELECT id, username, api_key_hash, timezone, created_at \
-             FROM users WHERE api_key_hash LIKE '$argon2%'",
-        )
-        .fetch_all(&self.state.db)
-        .await
-        .mcp_err()?;
-
-        if legacy_users.is_empty() {
-            return Err(McpError::internal("unauthorized: invalid API key"));
-        }
-
-        let key_owned = key.to_owned();
-        let matched = tokio::task::spawn_blocking(move || {
-            for user in legacy_users {
-                if let Ok(hash) = PasswordHash::new(&user.api_key_hash)
-                    && Argon2::default()
-                        .verify_password(key_owned.as_bytes(), &hash)
-                        .is_ok()
-                {
-                    return Some(user);
-                }
-            }
-            None
-        })
-        .await
-        .map_err(|e| McpError::internal(format!("argon2 verify task panicked: {e}")))?;
-
-        let Some(user) = matched else {
-            return Err(McpError::internal("unauthorized: invalid API key"));
-        };
-
-        // Upgrade the stored hash to sha256 so future auths skip this slow path.
-        let _ = sqlx::query("UPDATE users SET api_key_hash = $1 WHERE id = $2")
-            .bind(&sha256_hash)
-            .bind(user.id)
-            .execute(&self.state.db)
-            .await;
-
-        Ok(user)
+        .ok_or_else(|| McpError::internal("unauthorized: invalid API key"))
     }
 }
 
-// ─── Free helper functions ────────────────────────────────────────────────────
+// ─── Free helper functions ────────────────────────────────────────────────────────
 
 /// Parses an optional timestamp string (RFC 3339 or YYYY-MM-DD). Defaults to now().
 fn parse_logged_at(s: Option<&str>) -> McpResult<DateTime<Utc>> {
@@ -1429,7 +1375,7 @@ fn resolved_to_db_amounts(resolved: &ParsedAmount) -> (Option<f32>, Option<f32>)
     }
 }
 
-// ─── Local helper structs ─────────────────────────────────────────────────────
+// ─── Local helper structs ───────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct IngredientInput {
@@ -1469,7 +1415,7 @@ struct RecentLogRow {
     kcal_snapshot: f32,
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1606,14 +1552,14 @@ mod tests {
 
     #[test]
     fn parse_logged_at_rfc3339_with_positive_offset() {
-        // 12:30 at UTC+5 \u{2192} 07:30 UTC
+        // 12:30 at UTC+5 → 07:30 UTC
         let dt = parse_logged_at(Some("2024-01-15T12:30:00+05:00")).unwrap();
         assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2024-01-15 07:30:00");
     }
 
     #[test]
     fn parse_logged_at_rfc3339_with_negative_offset() {
-        // 12:00 at UTC-8 \u{2192} 20:00 UTC
+        // 12:00 at UTC-8 → 20:00 UTC
         let dt = parse_logged_at(Some("2024-06-01T12:00:00-08:00")).unwrap();
         assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2024-06-01 20:00:00");
     }
