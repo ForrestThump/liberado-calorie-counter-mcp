@@ -106,26 +106,6 @@ async fn cmd_serve() {
             .expect("failed to seed default user");
 
             info!("seeded default user from LIBERADO_DEFAULT_API_KEY");
-        } else {
-            // Upgrade the default user's hash from argon2 to sha256 if needed.
-            let row: Option<(i32,)> = sqlx::query_as(
-                "SELECT id FROM users
-                 WHERE username = 'default' AND api_key_hash LIKE '$argon2%'",
-            )
-            .fetch_optional(&pool)
-            .await
-            .expect("failed to query default user hash");
-
-            if let Some((user_id,)) = row {
-                let new_hash = hash_api_key(&config.default_api_key);
-                sqlx::query("UPDATE users SET api_key_hash = $1 WHERE id = $2")
-                    .bind(&new_hash)
-                    .bind(user_id)
-                    .execute(&pool)
-                    .await
-                    .expect("failed to rehash default user");
-                info!("migrated default user API key hash from argon2 to sha256");
-            }
         }
     }
 
