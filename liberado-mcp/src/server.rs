@@ -53,7 +53,7 @@ impl LiberadoServer {
         }
     }
 
-    // ─── Food search & management ─────────────────────────────────────────────
+    // ─── Food search & management ───────────────────────────────────────────────
 
     /// Search for a food by name. Checks the local cache first, then falls back
     /// to USDA FoodData Central and Open Food Facts. A strong match is
@@ -277,7 +277,8 @@ impl LiberadoServer {
                     .ok_or_else(|| McpError::internal("food has no source_id"))?;
                 let fdc_id: i32 = sid
                     .parse()
-                    .map_err(|_| McpError::internal(format!("invalid source_id '{sid}'")))?;
+                    .map_err(|_| McpError::internal(format!("invalid source_id '{sid}'")))?
+;
 
                 let detail = food::fetch_usda_detail(
                     &self.state.http_client,
@@ -703,7 +704,7 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Recipes ──────────────────────────────────────────────────────────────
+    // ─── Recipes ───────────────────────────────────────────────────────────────────
 
     /// Create a named recipe from a list of food ingredients with amounts.
     #[tool("Create a named recipe from food ingredients for repeated composite meals. Returns a recipe_id for use with log_recipe. food_id values come from search_food.")]
@@ -790,7 +791,7 @@ impl LiberadoServer {
         ))
     }
 
-    // ─── Exercise ─────────────────────────────────────────────────────────────
+    // ─── Exercise ──────────────────────────────────────────────────────────────────
 
     /// Log an exercise session with calories burned.
     #[tool("Log an exercise session with estimated or confirmed calories burned. Burned calories are subtracted from net_kcal in get_daily_summary.")]
@@ -844,7 +845,7 @@ impl LiberadoServer {
         ))
     }
 
-    // ─── Weight ───────────────────────────────────────────────────────────────
+    // ─── Weight ─────────────────────────────────────────────────────────────────────
 
     /// Log a body weight measurement.
     #[tool("Log a body weight measurement in kilograms. History is retrievable with get_weight_history.")]
@@ -935,7 +936,7 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Summaries ────────────────────────────────────────────────────────────
+    // ─── Summaries ────────────────────────────────────────────────────────────────
 
     /// All nutrient totals for a user on a given date, compared against their goals.
     #[tool("Return total kcal, macros, exercise burned, net kcal, and per-meal breakdown for a given date. Includes goal comparison if set_goals has been called.")]
@@ -1175,7 +1176,7 @@ impl LiberadoServer {
         serde_json::to_string_pretty(&result).mcp_err()
     }
 
-    // ─── Goals ────────────────────────────────────────────────────────────────
+    // ─── Goals ─────────────────────────────────────────────────────────────────────
 
     /// Set or update daily nutrition targets for a user.
     #[tool("Set daily nutrition targets (kcal, macros, fiber, water). Goals are versioned by date — omit effective_from to apply from today. Only supplied fields are updated; existing values are preserved.")]
@@ -1235,17 +1236,13 @@ impl LiberadoServer {
     }
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
+// ─── Private helpers ──────────────────────────────────────────────────────────────
 
 impl LiberadoServer {
-    /// Resolves an API key to a User. Falls back to `config.default_api_key`
-    /// when the caller supplies an empty key and the env var is set.
     async fn resolve_user(
         &self,
         api_key: &str,
     ) -> McpResult<liberado_core::models::User> {
-        use argon2::{Argon2, PasswordHash, PasswordVerifier};
-
         let key = if api_key.is_empty() {
             self.state.config.default_api_key.as_str()
         } else {
@@ -1256,34 +1253,21 @@ impl LiberadoServer {
             return Err(McpError::internal("unauthorized: no API key provided"));
         }
 
-        let users = sqlx::query_as::<_, liberado_core::models::User>(
-            "SELECT id, username, api_key_hash, timezone, created_at FROM users",
+        let sha256_hash = hex::encode(sha2::Sha256::digest(key.as_bytes()));
+
+        sqlx::query_as::<_, liberado_core::models::User>(
+            "SELECT id, username, api_key_hash, timezone, created_at \
+             FROM users WHERE api_key_hash = $1",
         )
-        .fetch_all(&self.state.db)
+        .bind(&sha256_hash)
+        .fetch_optional(&self.state.db)
         .await
-        .mcp_err()?;
-
-        let key_owned = key.to_owned();
-        let matched = tokio::task::spawn_blocking(move || {
-            for user in users {
-                if let Ok(hash) = PasswordHash::new(&user.api_key_hash)
-                    && Argon2::default()
-                        .verify_password(key_owned.as_bytes(), &hash)
-                        .is_ok()
-                {
-                    return Some(user);
-                }
-            }
-            None
-        })
-        .await
-        .map_err(|e| McpError::internal(format!("password verify task panicked: {e}")))?;
-
-        matched.ok_or_else(|| McpError::internal("unauthorized: invalid API key"))
+        .mcp_err()?
+        .ok_or_else(|| McpError::internal("unauthorized: invalid API key"))
     }
 }
 
-// ─── Free helper functions ────────────────────────────────────────────────────
+// ─── Free helper functions ────────────────────────────────────────────────────────
 
 /// Parses an optional timestamp string (RFC 3339 or YYYY-MM-DD). Defaults to now().
 fn parse_logged_at(s: Option<&str>) -> McpResult<DateTime<Utc>> {
@@ -1391,7 +1375,7 @@ fn resolved_to_db_amounts(resolved: &ParsedAmount) -> (Option<f32>, Option<f32>)
     }
 }
 
-// ─── Local helper structs ─────────────────────────────────────────────────────
+// ─── Local helper structs ───────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct IngredientInput {
@@ -1431,7 +1415,7 @@ struct RecentLogRow {
     kcal_snapshot: f32,
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

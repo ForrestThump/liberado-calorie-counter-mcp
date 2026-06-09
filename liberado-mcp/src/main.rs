@@ -1,10 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
-    Argon2,
-};
 use clap::{Parser, Subcommand};
 use tracing::info;
 use turbomcp::prelude::*;
@@ -99,21 +95,17 @@ async fn cmd_serve() {
             .expect("failed to query users");
 
         if count == 0 {
-            match hash_api_key(&config.default_api_key) {
-                Ok(hash) => {
-                    sqlx::query(
-                        "INSERT INTO users (username, api_key_hash, timezone)
-                         VALUES ('default', $1, 'UTC')",
-                    )
-                    .bind(&hash)
-                    .execute(&pool)
-                    .await
-                    .expect("failed to seed default user");
+            let hash = hash_api_key(&config.default_api_key);
+            sqlx::query(
+                "INSERT INTO users (username, api_key_hash, timezone)
+                 VALUES ('default', $1, 'UTC')",
+            )
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .expect("failed to seed default user");
 
-                    info!("seeded default user from LIBERADO_DEFAULT_API_KEY");
-                }
-                Err(e) => tracing::error!("failed to hash default API key: {e}"),
-            }
+            info!("seeded default user from LIBERADO_DEFAULT_API_KEY");
         }
     }
 
@@ -174,7 +166,7 @@ async fn cmd_user(action: UserAction) {
 
     match action {
         UserAction::Add { username, api_key, timezone } => {
-            let hash = hash_api_key(&api_key).expect("failed to hash API key");
+            let hash = hash_api_key(&api_key);
 
             sqlx::query(
                 "INSERT INTO users (username, api_key_hash, timezone)
@@ -188,7 +180,7 @@ async fn cmd_user(action: UserAction) {
             .expect("failed to insert user (username may already exist)");
 
             println!("User '{username}' created (timezone: {timezone}).");
-            println!("Store the plain-text API key securely — it cannot be recovered from the hash.");
+            println!("Store the plain-text API key securely \u{2014} it cannot be recovered from the hash.");
         }
         UserAction::List => {
             let rows: Vec<(i32, String, String, String)> = sqlx::query_as(
@@ -241,10 +233,8 @@ async fn connect_with_retry(database_url: &str, max_connections: u32) -> sqlx::P
     }
 }
 
-fn hash_api_key(key: &str) -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default().hash_password(key.as_bytes(), &salt)?;
-    Ok(hash.to_string())
+fn hash_api_key(key: &str) -> String {
+    hex::encode(sha2::Sha256::digest(key.as_bytes()))
 }
 
 fn init_tracing() {
@@ -266,18 +256,20 @@ mod tests {
     }
 
     #[test]
-    fn hash_api_key_produces_verifiable_hash() {
-        use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    fn hash_api_key_is_sha256_hex() {
         let key = "my-secret-api-key";
-        let hash_str = hash_api_key(key).unwrap();
-        let hash = PasswordHash::new(&hash_str).unwrap();
-        assert!(Argon2::default().verify_password(key.as_bytes(), &hash).is_ok());
+        let hash = hash_api_key(key);
+        // SHA-256 produces 32 bytes \u{2192} 64 hex chars
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // Deterministic
+        assert_eq!(hash, hash_api_key(key));
     }
 
     #[test]
     fn hash_api_key_different_keys_produce_different_hashes() {
-        let h1 = hash_api_key("key-one").unwrap();
-        let h2 = hash_api_key("key-two").unwrap();
+        let h1 = hash_api_key("key-one");
+        let h2 = hash_api_key("key-two");
         assert_ne!(h1, h2);
     }
 }
