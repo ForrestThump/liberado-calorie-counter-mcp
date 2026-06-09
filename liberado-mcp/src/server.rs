@@ -1263,17 +1263,23 @@ impl LiberadoServer {
         .await
         .mcp_err()?;
 
-        for user in users {
-            if let Ok(hash) = PasswordHash::new(&user.api_key_hash)
-                && Argon2::default()
-                    .verify_password(key.as_bytes(), &hash)
-                    .is_ok()
-            {
-                return Ok(user);
+        let key_owned = key.to_owned();
+        let matched = tokio::task::spawn_blocking(move || {
+            for user in users {
+                if let Ok(hash) = PasswordHash::new(&user.api_key_hash)
+                    && Argon2::default()
+                        .verify_password(key_owned.as_bytes(), &hash)
+                        .is_ok()
+                {
+                    return Some(user);
+                }
             }
-        }
+            None
+        })
+        .await
+        .map_err(|e| McpError::internal(format!("password verify task panicked: {e}")))?;
 
-        Err(McpError::internal("unauthorized: invalid API key"))
+        matched.ok_or_else(|| McpError::internal("unauthorized: invalid API key"))
     }
 }
 
