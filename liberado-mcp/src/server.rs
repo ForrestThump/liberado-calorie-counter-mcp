@@ -1243,6 +1243,7 @@ impl LiberadoServer {
         &self,
         api_key: &str,
     ) -> McpResult<liberado_core::models::User> {
+        use sha2::Digest;
         let key = if api_key.is_empty() {
             self.state.config.default_api_key.as_str()
         } else {
