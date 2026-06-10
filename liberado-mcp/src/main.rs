@@ -234,6 +234,7 @@ async fn connect_with_retry(database_url: &str, max_connections: u32) -> sqlx::P
 }
 
 fn hash_api_key(key: &str) -> String {
+    use sha2::Digest;
     hex::encode(sha2::Sha256::digest(key.as_bytes()))
 }
 
