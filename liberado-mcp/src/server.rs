@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value as JsonValue;
 use turbomcp::prelude::*;
+use uuid::Uuid;
 
 use liberado_core::estimator::NutritionEstimator;
 
@@ -268,10 +269,12 @@ impl LiberadoServer {
             }
         }
 
-        let unit_label = if basis_str == "per_100ml" { "100ml" } else { "100g" };
-        Ok(format!(
-            "Cached '{food_name}' as food_id {food_id} with {kcal_p100:.1} kcal/{unit_label} (user-confirmed)."
-        ))
+        serde_json::to_string_pretty(&serde_json::json!({
+            "food_id":     food_id,
+            "name":        food_name,
+            "kcal_per_100": kcal_p100,
+            "basis":       basis_str,
+        })).mcp_err()
     }
 
     /// Re-fetch a food item's data from external APIs, replacing the cached values.
@@ -356,13 +359,15 @@ impl LiberadoServer {
     /// converts units, and snapshots kcal + nutrients at write time. If the
     /// name is ambiguous the tool returns candidates — call search_food to find
     /// the exact canonical name, or call confirm_food if no match exists.
-    #[tool("Log a food item by name. Searches automatically; call search_food first if the name is ambiguous. Supports g, oz, lb, kg, ml, l, and named portions (cup, tbsp, etc.) registered for that food.")]
+    #[tool("Log a food item. Supports g, oz, lb, kg, ml, l, and named portions (cup, tbsp, etc.) registered for that food.\n\nTwo ways to identify the food:\n  • food_name (required): searched automatically through local cache → USDA → Open Food Facts. Call search_food first if the name is ambiguous.\n  • food_id (optional): food_id from search_food or confirm_food — bypasses search entirely. Use this immediately after confirm_food to avoid a redundant lookup.")]
     async fn log_food(
         &self,
         #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
         api_key: Option<String>,
-        #[description("Name of the food to log; searched automatically. Use the exact canonical name from search_food if there was ambiguity.")]
+        #[description("Name of the food to log; searched automatically. Use the exact canonical name from search_food if there was ambiguity. Ignored when food_id is provided.")]
         food_name: String,
+        #[description("food_id from search_food or confirm_food. When provided, bypasses search entirely — use this right after confirm_food.")]
+        food_id: Option<i32>,
         #[description("Numeric quantity to log (e.g. 250 for 250 ml, 1.5 for 1.5 cups)")]
         amount: f32,
         #[description("Unit of measurement: g, oz, lb, kg for mass; ml, l for volume; or a named portion (cup, tbsp, tsp, slice) if registered for this food via confirm_food")]
@@ -371,73 +376,87 @@ impl LiberadoServer {
         meal_type: String,
         #[description("When food was eaten: RFC 3339 ('2024-01-15T08:30:00Z') or date only ('2024-01-15'). Defaults to now.")]
         logged_at: Option<String>,
-        #[description("Unique string for this logging intent (e.g. 'breakfast-milk-2024-01-15'). Safe to retry — duplicate keys are ignored.")]
-        idempotency_key: String,
+        #[description("Unique string for this logging intent (e.g. 'breakfast-milk-2024-01-15'). Safe to retry — duplicate keys are ignored. Auto-generated if omitted.")]
+        idempotency_key: Option<String>,
         #[description("Optional labels to attach to this log entry (e.g. [\"cheat meal\", \"post-workout\"])")]
         tags: Option<Vec<String>>,
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
         let ts = parse_logged_at(logged_at.as_deref())?;
+        let idem_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // Find the food (full fallback chain: local → USDA → OFF)
-        let opts = FoodSearchOptions::from(&*self.state.config);
-        let search_resp = food::search(
-            &self.state.db,
-            &self.state.http_client,
-            &self.state.config.usda_api_key,
-            self.state.config.search_strong_match_threshold as f32,
-            self.state.config.search_max_weak_results as usize,
-            &food_name,
-            &opts,
-        )
-        .await
-        .mcp_err()?;
+        // Resolve food: direct food_id path bypasses the search pipeline entirely.
+        let (resolved_food_id, resolved_name, resolved_basis, resolved_kcal_per_100) =
+            if let Some(fid) = food_id {
+                let row = sqlx::query_as::<_, (String, String)>(
+                    "SELECT canonical_name, basis FROM food_items WHERE id = $1",
+                )
+                .bind(fid)
+                .fetch_optional(&self.state.db)
+                .await
+                .mcp_err()?
+                .ok_or_else(|| McpError::internal(format!("food_id {fid} not found")))?;
+                let kcal = food::get_kcal(&self.state.db, fid).await.mcp_err()?.unwrap_or(0.0);
+                (fid, row.0, row.1, kcal)
+            } else {
+                // Search path: local cache → USDA → OFF
+                let opts = FoodSearchOptions::from(&*self.state.config);
+                let search_resp = food::search(
+                    &self.state.db,
+                    &self.state.http_client,
+                    &self.state.config.usda_api_key,
+                    self.state.config.search_strong_match_threshold as f32,
+                    self.state.config.search_max_weak_results as usize,
+                    &food_name,
+                    &opts,
+                )
+                .await
+                .mcp_err()?;
 
-        if search_resp.fallback_required {
-            return Err(McpError::internal(format!(
-                "Food '{}' not found in any database. Call confirm_food to add it, then retry.",
-                food_name
-            )));
-        }
+                if search_resp.fallback_required {
+                    return Err(McpError::internal(format!(
+                        "Food '{}' not found in any database. Call confirm_food to add it, then retry.",
+                        food_name
+                    )));
+                }
 
-        if !search_resp.auto_selected {
-            let names: Vec<&str> = search_resp.matches.iter().map(|m| m.name.as_str()).collect();
-            return Err(McpError::internal(format!(
-                "Ambiguous food name '{}'. Did you mean: {}? \
-                 Call search_food to see food_ids, then retry with the exact canonical name.",
-                food_name,
-                names.join(", ")
-            )));
-        }
+                if !search_resp.auto_selected {
+                    let names: Vec<&str> =
+                        search_resp.matches.iter().map(|m| m.name.as_str()).collect();
+                    return Err(McpError::internal(format!(
+                        "Ambiguous food name '{}'. Did you mean: {}? \
+                         Call search_food to see food_ids, then retry with the exact canonical name.",
+                        food_name,
+                        names.join(", ")
+                    )));
+                }
 
-        let matched = &search_resp.matches[0];
-        let food_id = matched.food_id;
+                let m = &search_resp.matches[0];
+                (m.food_id, m.name.clone(), m.basis.clone(), m.kcal_per_100)
+            };
 
         // Resolve units
         let parsed = units::parse_amount(amount, &unit);
         let resolved = match parsed {
             ParsedAmount::Named { ref label, count } => {
-                units::resolve_named_portion(&self.state.db, food_id, label, count)
+                units::resolve_named_portion(&self.state.db, resolved_food_id, label, count)
                     .await
                     .mcp_err()?
                     .ok_or_else(|| McpError::internal(format!(
                         "Unit '{unit}' not recognized for '{}'. \
-                         Use g, oz, lb, ml, l, or a portion from food_portions.",
-                        matched.name
+                         Use g, oz, lb, ml, l, or a named portion from list_portions.",
+                        resolved_name
                     )))?
             }
             other => other,
         };
 
         // Compute snapshots
-        let kcal_snapshot = units::scale_nutrient(matched.kcal_per_100, &resolved, &matched.basis);
-        let nutrient_snapshot = build_nutrient_snapshot(
-            &self.state.db,
-            food_id,
-            &resolved,
-            &matched.basis,
-        )
-        .await?;
+        let kcal_snapshot =
+            units::scale_nutrient(resolved_kcal_per_100, &resolved, &resolved_basis);
+        let nutrient_snapshot =
+            build_nutrient_snapshot(&self.state.db, resolved_food_id, &resolved, &resolved_basis)
+                .await?;
 
         // Find or create meal_log for this user/date/meal_type
         let meal_log_id = find_or_create_meal_log(
@@ -461,12 +480,12 @@ impl LiberadoServer {
              RETURNING id",
         )
         .bind(meal_log_id)
-        .bind(food_id)
+        .bind(resolved_food_id)
         .bind(amount_g)
         .bind(amount_ml)
         .bind(kcal_snapshot)
         .bind(&nutrient_snapshot)
-        .bind(&idempotency_key)
+        .bind(&idem_key)
         .fetch_one(&self.state.db)
         .await
         .mcp_err()?;
@@ -487,7 +506,7 @@ impl LiberadoServer {
 
         Ok(format!(
             "Logged {amount} {unit} of '{}' ({:.1} kcal) to {meal_type} on {}.",
-            matched.name,
+            resolved_name,
             kcal_snapshot,
             ts.format("%Y-%m-%d")
         ))
@@ -507,11 +526,12 @@ impl LiberadoServer {
         meal_type: String,
         #[description("When the meal was eaten: RFC 3339 ('2024-01-15T08:30:00Z') or date only ('2024-01-15'). Defaults to now.")]
         logged_at: Option<String>,
-        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored.")]
-        idempotency_key: String,
+        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored. Auto-generated if omitted.")]
+        idempotency_key: Option<String>,
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
         let ts = parse_logged_at(logged_at.as_deref())?;
+        let idem_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
         let scale = servings.unwrap_or(1.0);
 
         // Verify recipe ownership
@@ -620,7 +640,7 @@ impl LiberadoServer {
         .bind(amount_ml_db)
         .bind(total_kcal)
         .bind(&nutrient_snapshot)
-        .bind(&idempotency_key)
+        .bind(&idem_key)
         .fetch_one(&self.state.db)
         .await
         .mcp_err()?;
@@ -833,11 +853,12 @@ impl LiberadoServer {
         logged_at: Option<String>,
         #[description("Optional free-text note")]
         note: Option<String>,
-        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored.")]
-        idempotency_key: String,
+        #[description("Unique string for this logging intent. Safe to retry — duplicate keys are ignored. Auto-generated if omitted.")]
+        idempotency_key: Option<String>,
     ) -> McpResult<String> {
         let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
         let ts = parse_logged_at(logged_at.as_deref())?;
+        let idem_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
         let source_str = source.as_deref().unwrap_or("user");
 
         if !["user", "llm_estimated", "device"].contains(&source_str) {
@@ -857,7 +878,7 @@ impl LiberadoServer {
         .bind(&description)
         .bind(calories_burned)
         .bind(source_str)
-        .bind(&idempotency_key)
+        .bind(&idem_key)
         .bind(note.as_deref())
         .execute(&self.state.db)
         .await
@@ -968,6 +989,91 @@ impl LiberadoServer {
         Ok(format!(
             "Deleted exercise log {exercise_log_id} ('{description}', {calories_burned:.1} kcal burned)."
         ))
+    }
+
+    /// Delete a food log entry by ID.
+    #[tool("Delete a food log entry by its ID. log_entry_id comes from list_recent_logs results. Only entries belonging to the authenticated user can be deleted.")]
+    async fn delete_log_entry(
+        &self,
+        #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
+        api_key: Option<String>,
+        #[description("ID of the log entry to delete; from list_recent_logs results")]
+        log_entry_id: i32,
+    ) -> McpResult<String> {
+        let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
+
+        let row = sqlx::query_as::<_, (i32, Option<String>, f32)>(
+            "SELECT ml.user_id, fi.canonical_name, le.kcal_snapshot
+             FROM log_entries le
+             JOIN meal_logs ml ON ml.id = le.meal_log_id
+             LEFT JOIN food_items fi ON fi.id = le.food_id
+             WHERE le.id = $1",
+        )
+        .bind(log_entry_id)
+        .fetch_optional(&self.state.db)
+        .await
+        .mcp_err()?
+        .ok_or_else(|| McpError::internal(format!("log_entry_id {log_entry_id} not found")))?;
+
+        let (owner_id, food_name, kcal) = row;
+
+        if owner_id != user.id {
+            return Err(McpError::internal(
+                "unauthorized: log entry belongs to another user",
+            ));
+        }
+
+        sqlx::query("DELETE FROM log_entries WHERE id = $1")
+            .bind(log_entry_id)
+            .execute(&self.state.db)
+            .await
+            .mcp_err()?;
+
+        let name = food_name.unwrap_or_else(|| "recipe".to_string());
+        Ok(format!(
+            "Deleted log entry {log_entry_id} ('{name}', {kcal:.1} kcal)."
+        ))
+    }
+
+    /// List registered named portions for a food item.
+    #[tool("List the named serving sizes registered for a food item (e.g. cup, tbsp, serving). Returns unit labels and gram/ml equivalents. Use before log_food to see which named units are available. food_id comes from search_food or confirm_food.")]
+    async fn list_portions(
+        &self,
+        #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
+        api_key: Option<String>,
+        #[description("ID of the food item to inspect; from search_food or confirm_food results")]
+        food_id: i32,
+    ) -> McpResult<String> {
+        let _ = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
+
+        let rows = sqlx::query_as::<_, (String, Option<f32>, Option<f32>)>(
+            "SELECT unit_label, gram_equivalent, ml_equivalent
+             FROM food_portions
+             WHERE food_id = $1
+             ORDER BY unit_label",
+        )
+        .bind(food_id)
+        .fetch_all(&self.state.db)
+        .await
+        .mcp_err()?;
+
+        let portions: Vec<JsonValue> = rows
+            .iter()
+            .map(|(label, g, ml)| {
+                serde_json::json!({
+                    "unit":  label,
+                    "grams": g,
+                    "ml":    ml,
+                })
+            })
+            .collect();
+
+        serde_json::to_string_pretty(&serde_json::json!({
+            "food_id":  food_id,
+            "count":    portions.len(),
+            "portions": portions,
+        }))
+        .mcp_err()
     }
 
     // ─── Weight ─────────────────────────────────────────────────────────────────────
