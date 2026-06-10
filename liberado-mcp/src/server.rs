@@ -151,34 +151,59 @@ impl LiberadoServer {
     /// returns no match, or to add any food with precise figures. The food is
     /// immediately available in log_food. Supply portions to enable logging by
     /// cup, tbsp, or other named units.
-    #[tool("Add a food item with user-supplied nutrition data. Use when search_food finds no match. basis='per_100ml' for liquids (milk, juice, oil); default is per_100g. portions enables named-unit logging (e.g. cup, tbsp).")]
+    ///
+    /// Two ways to supply calorie data:
+    ///   - Per-100 path: kcal_per_100 (required), set basis='per_100ml' for liquids.
+    ///   - Serving path: serving_kcal + serving_ml (liquid) or serving_kcal + serving_g
+    ///     (solid) — the server derives kcal_per_100 and infers basis automatically.
+    #[tool("Add a food item with user-supplied nutrition data. Use when search_food finds no match.\n\nTwo ways to supply calories:\n  • Per-100 path: kcal_per_100 (required) + optional basis ('per_100ml' for liquids, default 'per_100g')\n  • Serving path: serving_kcal + serving_ml (liquids) or serving_kcal + serving_g (solids) — server computes kcal_per_100 and infers basis automatically. Also accepts serving_protein_g, serving_fat_g, serving_carbs_g to skip per-100 macro math.\n\nportions enables named-unit logging (e.g. cup, tbsp).")]
     async fn confirm_food(
         &self,
         #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
         api_key: Option<String>,
         #[description("Canonical name for this food (e.g. 'Whole Milk', 'Rolled Oats')")]
         food_name: String,
-        #[description("Kilocalories per 100 base units (100g or 100ml depending on basis)")]
-        kcal_per_100: f32,
-        #[description("Protein in grams per 100 base units")]
+        #[description("Kilocalories per 100g or 100ml. Required unless serving_kcal + serving_ml/serving_g are provided.")]
+        kcal_per_100: Option<f32>,
+        #[description("Protein in grams per 100 base units. Overridden by serving_protein_g if provided.")]
         protein_per_100: Option<f32>,
-        #[description("Fat in grams per 100 base units")]
+        #[description("Fat in grams per 100 base units. Overridden by serving_fat_g if provided.")]
         fat_per_100: Option<f32>,
-        #[description("Carbohydrates in grams per 100 base units")]
+        #[description("Carbohydrates in grams per 100 base units. Overridden by serving_carbs_g if provided.")]
         carbs_per_100: Option<f32>,
-        #[description("Nutrient basis: 'per_100g' for solids (default) or 'per_100ml' for liquids")]
+        #[description("Nutrient basis: 'per_100g' for solids (default) or 'per_100ml' for liquids. Inferred automatically when serving_ml or serving_g is supplied.")]
         basis: Option<String>,
+        #[description("Total kcal for one serving. Combine with serving_ml (liquid) or serving_g (solid) to skip per-100 math. When provided, kcal_per_100 is ignored.")]
+        serving_kcal: Option<f32>,
+        #[description("Serving size in millilitres (for liquids). Used with serving_kcal to derive kcal_per_100 and set basis=per_100ml automatically.")]
+        serving_ml: Option<f32>,
+        #[description("Serving size in grams (for solids). Used with serving_kcal to derive kcal_per_100 and set basis=per_100g automatically.")]
+        serving_g: Option<f32>,
+        #[description("Protein in grams for one serving. Used with serving_ml or serving_g to derive protein_per_100.")]
+        serving_protein_g: Option<f32>,
+        #[description("Fat in grams for one serving. Used with serving_ml or serving_g to derive fat_per_100.")]
+        serving_fat_g: Option<f32>,
+        #[description("Carbohydrates in grams for one serving. Used with serving_ml or serving_g to derive carbs_per_100.")]
+        serving_carbs_g: Option<f32>,
         #[description("Named serving sizes as a JSON array, e.g. [{\"unit\":\"cup\",\"grams\":90},{\"unit\":\"tbsp\",\"ml\":15}]. Use 'grams' for solid portions and 'ml' for liquid portions.")]
         portions: Option<String>,
     ) -> McpResult<String> {
         let _ = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
 
-        let basis_str = match basis.as_deref().unwrap_or("per_100g") {
-            v @ ("per_100g" | "per_100ml") => v,
-            other => return Err(McpError::internal(format!(
-                "invalid basis '{other}': must be 'per_100g' or 'per_100ml'"
-            ))),
-        };
+        let (basis_str, kcal_p100, protein_p100, fat_p100, carbs_p100) =
+            resolve_confirm_food_nutrients(
+                kcal_per_100,
+                protein_per_100,
+                fat_per_100,
+                carbs_per_100,
+                basis.as_deref(),
+                serving_kcal,
+                serving_ml,
+                serving_g,
+                serving_protein_g,
+                serving_fat_g,
+                serving_carbs_g,
+            )?;
 
         let food_id = sqlx::query_scalar::<_, i32>(
             "INSERT INTO food_items (canonical_name, basis, source, confidence)
@@ -192,10 +217,10 @@ impl LiberadoServer {
         .mcp_err()?;
 
         let nutrients: &[(&str, f32)] = &[
-            ("energy",        kcal_per_100),
-            ("protein",       protein_per_100.unwrap_or(0.0)),
-            ("fat_total",     fat_per_100.unwrap_or(0.0)),
-            ("carbohydrates", carbs_per_100.unwrap_or(0.0)),
+            ("energy",        kcal_p100),
+            ("protein",       protein_p100),
+            ("fat_total",     fat_p100),
+            ("carbohydrates", carbs_p100),
         ];
 
         for (name, value) in nutrients {
@@ -245,7 +270,7 @@ impl LiberadoServer {
 
         let unit_label = if basis_str == "per_100ml" { "100ml" } else { "100g" };
         Ok(format!(
-            "Cached '{food_name}' as food_id {food_id} with {kcal_per_100} kcal/{unit_label} (user-confirmed)."
+            "Cached '{food_name}' as food_id {food_id} with {kcal_p100:.1} kcal/{unit_label} (user-confirmed)."
         ))
     }
 
@@ -1370,6 +1395,88 @@ impl LiberadoServer {
 
 // ─── Free helper functions ────────────────────────────────────────────────────────
 
+/// Resolves nutrient values and basis for `confirm_food` from either the
+/// serving-size convenience path or the direct per-100 path.
+///
+/// Serving path (preferred when label data is available):
+///   serving_kcal + serving_ml → per_100ml basis, all values derived.
+///   serving_kcal + serving_g  → per_100g  basis, all values derived.
+///   Macro serving fields (serving_protein_g etc.) override their per-100 counterparts;
+///   if a macro serving field is absent its per-100 counterpart is used as-is (0 if also absent).
+///
+/// Direct path: kcal_per_100 required; basis from `basis` param (default per_100g).
+fn resolve_confirm_food_nutrients(
+    kcal_per_100: Option<f32>,
+    protein_per_100: Option<f32>,
+    fat_per_100: Option<f32>,
+    carbs_per_100: Option<f32>,
+    basis: Option<&str>,
+    serving_kcal: Option<f32>,
+    serving_ml: Option<f32>,
+    serving_g: Option<f32>,
+    serving_protein_g: Option<f32>,
+    serving_fat_g: Option<f32>,
+    serving_carbs_g: Option<f32>,
+) -> McpResult<(&'static str, f32, f32, f32, f32)> {
+    const BASE: f32 = 100.0;
+
+    if let Some(s_kcal) = serving_kcal {
+        let (basis_out, divisor) = if let Some(s_ml) = serving_ml {
+            if s_ml <= 0.0 {
+                return Err(McpError::internal("serving_ml must be greater than 0"));
+            }
+            ("per_100ml", s_ml)
+        } else if let Some(s_g) = serving_g {
+            if s_g <= 0.0 {
+                return Err(McpError::internal("serving_g must be greater than 0"));
+            }
+            ("per_100g", s_g)
+        } else {
+            return Err(McpError::internal(
+                "serving_kcal requires serving_ml (for liquids) or serving_g (for solids)",
+            ));
+        };
+
+        // For each macro: use per-serving value if provided, else fall back to per-100 value.
+        let derive = |per_serving: Option<f32>, fallback: Option<f32>| -> f32 {
+            per_serving.map_or(fallback.unwrap_or(0.0), |v| v / divisor * BASE)
+        };
+
+        return Ok((
+            basis_out,
+            s_kcal / divisor * BASE,
+            derive(serving_protein_g, protein_per_100),
+            derive(serving_fat_g, fat_per_100),
+            derive(serving_carbs_g, carbs_per_100),
+        ));
+    }
+
+    // Direct per-100 path
+    let kcal = kcal_per_100.ok_or_else(|| {
+        McpError::internal(
+            "kcal_per_100 is required unless serving_kcal + serving_ml/serving_g are provided",
+        )
+    })?;
+
+    let basis_out = match basis.unwrap_or("per_100g") {
+        "per_100g" => "per_100g",
+        "per_100ml" => "per_100ml",
+        other => {
+            return Err(McpError::internal(format!(
+                "invalid basis '{other}': must be 'per_100g' or 'per_100ml'"
+            )))
+        }
+    };
+
+    Ok((
+        basis_out,
+        kcal,
+        protein_per_100.unwrap_or(0.0),
+        fat_per_100.unwrap_or(0.0),
+        carbs_per_100.unwrap_or(0.0),
+    ))
+}
+
 /// Parses an optional timestamp string (RFC 3339 or YYYY-MM-DD). Defaults to now().
 fn parse_logged_at(s: Option<&str>) -> McpResult<DateTime<Utc>> {
     let Some(s) = s else { return Ok(Utc::now()) };
@@ -1670,5 +1777,157 @@ mod tests {
         assert!(parse_date_param(Some("01/15/2024")).is_err());
         assert!(parse_date_param(Some("20240115")).is_err());
         assert!(parse_date_param(Some("Jan 15, 2024")).is_err());
+    }
+
+    // ── resolve_confirm_food_nutrients ────────────────────────────────────────
+
+    fn rcfn(
+        kcal_per_100: Option<f32>,
+        protein_per_100: Option<f32>,
+        fat_per_100: Option<f32>,
+        carbs_per_100: Option<f32>,
+        basis: Option<&str>,
+        serving_kcal: Option<f32>,
+        serving_ml: Option<f32>,
+        serving_g: Option<f32>,
+        serving_protein_g: Option<f32>,
+        serving_fat_g: Option<f32>,
+        serving_carbs_g: Option<f32>,
+    ) -> McpResult<(&'static str, f32, f32, f32, f32)> {
+        resolve_confirm_food_nutrients(
+            kcal_per_100, protein_per_100, fat_per_100, carbs_per_100, basis,
+            serving_kcal, serving_ml, serving_g, serving_protein_g, serving_fat_g, serving_carbs_g,
+        )
+    }
+
+    #[test]
+    fn serving_path_liquid_derives_kcal_per_100ml() {
+        // 150 kcal / 355 ml  →  kcal/100ml = 150/355*100 ≈ 42.25
+        let (basis, kcal, _, _, _) = rcfn(
+            None, None, None, None, None,
+            Some(150.0), Some(355.0), None, None, None, None,
+        ).unwrap();
+        assert_eq!(basis, "per_100ml");
+        assert!((kcal - 150.0 / 355.0 * 100.0).abs() < 0.01, "kcal={kcal}");
+    }
+
+    #[test]
+    fn serving_path_solid_derives_kcal_per_100g() {
+        // 200 kcal / 50 g  →  kcal/100g = 400
+        let (basis, kcal, _, _, _) = rcfn(
+            None, None, None, None, None,
+            Some(200.0), None, Some(50.0), None, None, None,
+        ).unwrap();
+        assert_eq!(basis, "per_100g");
+        assert!((kcal - 400.0).abs() < 0.01, "kcal={kcal}");
+    }
+
+    #[test]
+    fn serving_path_all_macros_derived() {
+        // 28g serving: 110 kcal, 3g protein, 5g fat, 14g carbs
+        let (basis, kcal, protein, fat, carbs) = rcfn(
+            None, None, None, None, None,
+            Some(110.0), None, Some(28.0),
+            Some(3.0), Some(5.0), Some(14.0),
+        ).unwrap();
+        assert_eq!(basis, "per_100g");
+        assert!((kcal    - 110.0 / 28.0 * 100.0).abs() < 0.01);
+        assert!((protein -   3.0 / 28.0 * 100.0).abs() < 0.01);
+        assert!((fat     -   5.0 / 28.0 * 100.0).abs() < 0.01);
+        assert!((carbs   -  14.0 / 28.0 * 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn serving_path_mixed_macro_sources() {
+        // serving_kcal + serving_g provided; only serving_protein_g given.
+        // fat_per_100 and carbs_per_100 should be used as-is for fat/carbs.
+        let (_, _, protein, fat, carbs) = rcfn(
+            None, None, Some(8.0), Some(30.0), None,
+            Some(200.0), None, Some(100.0),
+            Some(5.0), None, None,
+        ).unwrap();
+        // protein: 5/100*100 = 5.0 (from serving)
+        assert!((protein - 5.0).abs() < 0.01, "protein={protein}");
+        // fat: fallback to fat_per_100 = 8.0 (already per 100g, used as-is)
+        assert!((fat - 8.0).abs() < 0.01, "fat={fat}");
+        // carbs: fallback to carbs_per_100 = 30.0
+        assert!((carbs - 30.0).abs() < 0.01, "carbs={carbs}");
+    }
+
+    #[test]
+    fn direct_path_kcal_per_100g() {
+        let (basis, kcal, protein, fat, carbs) = rcfn(
+            Some(165.0), Some(31.0), Some(3.6), Some(0.0), None,
+            None, None, None, None, None, None,
+        ).unwrap();
+        assert_eq!(basis, "per_100g");
+        assert!((kcal - 165.0).abs() < 0.01);
+        assert!((protein - 31.0).abs() < 0.01);
+        assert!((fat - 3.6).abs() < 0.01);
+        assert!((carbs - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn direct_path_explicit_basis_per_100ml() {
+        let (basis, kcal, _, _, _) = rcfn(
+            Some(42.0), None, None, None, Some("per_100ml"),
+            None, None, None, None, None, None,
+        ).unwrap();
+        assert_eq!(basis, "per_100ml");
+        assert!((kcal - 42.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn direct_path_missing_kcal_errors() {
+        let err = rcfn(None, None, None, None, None, None, None, None, None, None, None).unwrap_err();
+        assert!(format!("{err:?}").contains("kcal_per_100 is required"));
+    }
+
+    #[test]
+    fn serving_path_missing_size_errors() {
+        // serving_kcal but neither serving_ml nor serving_g
+        let err = rcfn(
+            None, None, None, None, None,
+            Some(150.0), None, None, None, None, None,
+        ).unwrap_err();
+        assert!(format!("{err:?}").contains("serving_ml") || format!("{err:?}").contains("serving_g"));
+    }
+
+    #[test]
+    fn serving_path_zero_ml_errors() {
+        let err = rcfn(
+            None, None, None, None, None,
+            Some(150.0), Some(0.0), None, None, None, None,
+        ).unwrap_err();
+        assert!(format!("{err:?}").contains("serving_ml must be greater than 0"));
+    }
+
+    #[test]
+    fn serving_path_zero_g_errors() {
+        let err = rcfn(
+            None, None, None, None, None,
+            Some(150.0), None, Some(0.0), None, None, None,
+        ).unwrap_err();
+        assert!(format!("{err:?}").contains("serving_g must be greater than 0"));
+    }
+
+    #[test]
+    fn direct_path_invalid_basis_errors() {
+        let err = rcfn(
+            Some(100.0), None, None, None, Some("per_serving"),
+            None, None, None, None, None, None,
+        ).unwrap_err();
+        assert!(format!("{err:?}").contains("invalid basis"));
+    }
+
+    #[test]
+    fn serving_path_prefers_serving_kcal_over_kcal_per_100() {
+        // Both supplied: serving path should win
+        let (basis, kcal, _, _, _) = rcfn(
+            Some(999.0), None, None, None, None,
+            Some(150.0), Some(355.0), None, None, None, None,
+        ).unwrap();
+        assert_eq!(basis, "per_100ml");
+        assert!((kcal - 150.0 / 355.0 * 100.0).abs() < 0.01, "kcal={kcal}");
     }
 }
