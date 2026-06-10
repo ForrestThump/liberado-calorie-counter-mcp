@@ -12,7 +12,7 @@ trait IntoMcpResult<T> {
 
 impl<T, E: std::fmt::Display> IntoMcpResult<T> for Result<T, E> {
     fn mcp_err(self) -> McpResult<T> {
-        self.mcp_err()
+        self.map_err(|e| McpError::internal(e.to_string()))
     }
 }
 
