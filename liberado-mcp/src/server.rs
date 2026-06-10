@@ -277,8 +277,7 @@ impl LiberadoServer {
                     .ok_or_else(|| McpError::internal("food has no source_id"))?;
                 let fdc_id: i32 = sid
                     .parse()
-                    .map_err(|_| McpError::internal(format!("invalid source_id '{sid}'")))?
-;
+                    .map_err(|_| McpError::internal(format!("invalid source_id '{sid}'")))?;
 
                 let detail = food::fetch_usda_detail(
                     &self.state.http_client,
@@ -332,7 +331,7 @@ impl LiberadoServer {
     /// converts units, and snapshots kcal + nutrients at write time. If the
     /// name is ambiguous the tool returns candidates — call search_food to find
     /// the exact canonical name, or call confirm_food if no match exists.
-    #[tool("Log a food item by name. Searches automatically; call search_food first if the name is ambiguous. Supports g, oz, lb, ml, l, and named portions (cup, tbsp, etc.) registered for that food.")]
+    #[tool("Log a food item by name. Searches automatically; call search_food first if the name is ambiguous. Supports g, oz, lb, kg, ml, l, and named portions (cup, tbsp, etc.) registered for that food.")]
     async fn log_food(
         &self,
         #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
@@ -842,6 +841,107 @@ impl LiberadoServer {
         Ok(format!(
             "Exercise '{description}' logged ({calories_burned} kcal burned) on {}.",
             ts.format("%Y-%m-%d")
+        ))
+    }
+
+    /// List exercise log entries in reverse chronological order.
+    #[tool("List exercise log entries newest-first. Returns exercise_log_id (for delete_exercise_log), description, calories_burned, source, logged_at, and note. Use since to limit how far back to look; use limit to cap the number of results (like head).")]
+    async fn list_exercise_logs(
+        &self,
+        #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
+        api_key: Option<String>,
+        #[description("Only include entries logged on or after this date (YYYY-MM-DD, inclusive). Omit to return the most recent entries regardless of date.")]
+        since: Option<String>,
+        #[description("Maximum number of entries to return (default 20, max 100), applied newest-first — like piping into head.")]
+        limit: Option<u32>,
+    ) -> McpResult<String> {
+        let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
+        let max: i64 = limit
+            .unwrap_or(self.state.config.log_list_default_limit)
+            .min(self.state.config.log_list_max_limit) as i64;
+
+        let since_date: Option<NaiveDate> = since
+            .as_deref()
+            .map(|s| parse_date(s, "since"))
+            .transpose()?;
+
+        let rows = sqlx::query_as::<_, liberado_core::models::ExerciseLog>(
+            "SELECT id, user_id, logged_at, description, calories_burned, source,
+                    idempotency_key, note, created_at
+             FROM exercise_logs
+             WHERE user_id = $1
+               AND ($2::date IS NULL
+                    OR (logged_at AT TIME ZONE $3)::date >= $2::date)
+             ORDER BY logged_at DESC, id DESC
+             LIMIT $4",
+        )
+        .bind(user.id)
+        .bind(since_date)
+        .bind(&user.timezone)
+        .bind(max)
+        .fetch_all(&self.state.db)
+        .await
+        .mcp_err()?;
+
+        let entries: Vec<JsonValue> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "exercise_log_id": r.id,
+                    "logged_at":       r.logged_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                    "description":     r.description,
+                    "calories_burned": r.calories_burned,
+                    "source":          r.source,
+                    "note":            r.note,
+                })
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "user":    user.username,
+            "entries": entries,
+            "count":   entries.len(),
+        });
+
+        serde_json::to_string_pretty(&result).mcp_err()
+    }
+
+    /// Delete an exercise log entry by ID.
+    #[tool("Delete an exercise log entry by its ID. exercise_log_id comes from list_exercise_logs results. Only entries belonging to the authenticated user can be deleted.")]
+    async fn delete_exercise_log(
+        &self,
+        #[description("API key for authentication; omit when LIBERADO_DEFAULT_API_KEY is set on the server")]
+        api_key: Option<String>,
+        #[description("ID of the exercise log entry to delete; from list_exercise_logs results")]
+        exercise_log_id: i32,
+    ) -> McpResult<String> {
+        let user = self.resolve_user(api_key.as_deref().unwrap_or("")).await?;
+
+        let row = sqlx::query_as::<_, (i32, String, f32)>(
+            "SELECT user_id, description, calories_burned FROM exercise_logs WHERE id = $1",
+        )
+        .bind(exercise_log_id)
+        .fetch_optional(&self.state.db)
+        .await
+        .mcp_err()?
+        .ok_or_else(|| McpError::internal(format!("exercise_log_id {exercise_log_id} not found")))?;
+
+        let (owner_id, description, calories_burned) = row;
+
+        if owner_id != user.id {
+            return Err(McpError::internal(
+                "unauthorized: exercise log belongs to another user",
+            ));
+        }
+
+        sqlx::query("DELETE FROM exercise_logs WHERE id = $1")
+            .bind(exercise_log_id)
+            .execute(&self.state.db)
+            .await
+            .mcp_err()?;
+
+        Ok(format!(
+            "Deleted exercise log {exercise_log_id} ('{description}', {calories_burned:.1} kcal burned)."
         ))
     }
 
